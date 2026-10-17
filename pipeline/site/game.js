@@ -178,15 +178,28 @@ const interactables = [];
 function interact(x, z, r, label, act) { interactables.push({ pos: new THREE.Vector3(x, 0, z), r, label, act }); }
 
 // ---------------------------------------------------------------- loading
+// Safari's createImageBitmap path in GLTFLoader can stall on webp; use plain <img> decoding there.
+const IS_SAFARI = /^((?!chrome|android|crios|fxios).)*safari/i.test(navigator.userAgent);
+if (IS_SAFARI) self.createImageBitmap = undefined;
 const manager = new THREE.LoadingManager();
 const gltfLoader = new GLTFLoader(manager);
 const texLoader = new THREE.TextureLoader(manager);
 let loadDone = 0, loadTotal = 1;
 function progress(label) { loadDone++; $('bar').firstElementChild.style.width = Math.min(100, (loadDone / loadTotal) * 100) + '%'; if (label) $('loadTxt').textContent = label; }
-const loadGLTF = (url) => new Promise((res) => gltfLoader.load(url, res, undefined, (e) => { console.warn('load failed', url, e); res(null); }));
-const loadTex = (url) => new Promise((res) => texLoader.load(url, res, undefined, () => res(null)));
+// Every asset resolves (null on failure/timeout) so one bad file can't freeze the loading screen.
+const pending = new Set();
+function guard(url, p, ms = 90000) {
+  const name = url.split('/').pop().replace(/\.(gltf\.json|json|webp)$/, '');
+  pending.add(name);
+  return Promise.race([p, new Promise((res) => setTimeout(() => { console.warn('timeout', url); res(null); }, ms))])
+    .then((v) => (pending.delete(name), v));
+}
+setInterval(() => { if (!loadingHidden && pending.size && performance.now() > 25000) $('loadTxt').textContent = 'Still loading: ' + [...pending].join(', '); }, 2000);
+const loadGLTF = (url) => guard(url, new Promise((res) => gltfLoader.load(url, res, undefined, (e) => { console.warn('load failed', url, e); res(null); })));
+const loadTex = (url) => guard(url, new Promise((res) => texLoader.load(url, res, undefined, () => res(null))));
 
-async function loadEnv(name) {
+const loadEnv = (name) => guard(`env_${name}`, loadEnv0(name), 60000);
+async function loadEnv0(name) {
   // HDR probe: float16 RGBA, gzip, base64 (the host can't serve .hdr/.exr)
   try {
     const j = await (await fetch(W + `env_${name}.json`)).json();
@@ -222,6 +235,7 @@ async function loadWorld() {
   const lm = { A: lmA, B: lmB };
   for (const t of Object.values(lm)) if (t) { t.colorSpace = THREE.SRGBColorSpace; t.flipY = false; t.channel = 1; t.generateMipmaps = true; t.minFilter = THREE.LinearMipmapLinearFilter; t.anisotropy = 4; }
   const L = layout.lightmaps || {};
+  if (!gltf) throw new Error('world model failed to load');
   const world = gltf.scene;
   for (const f of await furnP) if (f) world.add(f.scene);
   const dynamic = [];
@@ -905,7 +919,7 @@ function showStart() {
     try { canvas.requestPointerLock?.()?.catch?.(() => {}); } catch {}
   };
 }
-boot();
+boot().catch((e) => { console.error(e); $('loadTxt').textContent = 'Load error: ' + (e?.message || e); });
 
 // test hook for automated screenshots
 window.__vault = { player, setView(x, z, y, p, d) { player.pos.set(x, 0, z); yaw = y; pitch = p; camDist = d ?? camDist; }, enter() { $('enterBtn').click(); }, get fps() { return $('fps').textContent; }, get ready() { return Object.keys(cars).length; } };
