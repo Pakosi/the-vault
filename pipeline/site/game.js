@@ -50,7 +50,18 @@ const params = new URLSearchParams(location.search);
 
 // ---------------------------------------------------------------- renderer
 const canvas = $('gl');
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance', preserveDrawingBuffer: params.has('shot') });
+let renderer;
+try {
+  renderer = new THREE.WebGLRenderer({ canvas, antialias: false, powerPreference: 'high-performance', preserveDrawingBuffer: params.has('shot') });
+} catch (e) {
+  $('loadTxt').textContent = 'Your browser turned 3D off for this page. Quit and reopen the browser, then try again.';
+  throw e;
+}
+canvas.addEventListener('webglcontextlost', (e) => {
+  e.preventDefault();
+  store.set('quality', 'low');
+  $('loading').hidden = false; $('loadTxt').textContent = 'The graphics card ran out of memory. Reload to continue on lighter settings.';
+});
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.AgXToneMapping;
 renderer.toneMappingExposure = +(params.get('exp') || 1.15);
@@ -217,6 +228,7 @@ async function loadEnv0(name) {
 let layout, envHall, envGarage;
 const screens = {};
 async function loadWorld() {
+  THREE.Cache.enabled = true; // the world and furniture files share texture files; load each image once
   layout = await (await fetch(W + 'layout.json')).json();
   loadTotal = 6 + layout.cars.length;
   for (const c of layout.colliders) colliders.push({ x0: c[0], x1: c[1], z0: c[2], z1: c[3] });
@@ -238,6 +250,17 @@ async function loadWorld() {
   if (!gltf) throw new Error('world model failed to load');
   const world = gltf.scene;
   for (const f of await furnP) if (f) world.add(f.scene);
+  THREE.Cache.clear(); THREE.Cache.enabled = false;
+  // Same image across files -> one shared Source, so the GPU holds each texture once.
+  const sources = new Map();
+  world.traverse((o) => {
+    for (const m of o.isMesh ? [].concat(o.material) : []) for (const k of ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'aoMap', 'emissiveMap']) {
+      const t = m[k], d = t?.source?.data;
+      if (!d) continue;
+      const s0 = sources.get(d);
+      if (s0) t.source = s0; else sources.set(d, t.source);
+    }
+  });
   const dynamic = [];
   world.traverse((o) => {
     if (!o.isMesh) return;
@@ -850,7 +873,11 @@ function updateRemotes(dt) {
 // ---------------------------------------------------------------- loop
 const clock = new THREE.Clock();
 let frames = 0, fpsT = 0, slowFrames = 0, tvT = 0, cabT = 0;
+let frameErr = 0;
 function frame() {
+  try { frame0(); } catch (e) { if (!frameErr++) { console.error(e); if (!loadingHidden) $('loadTxt').textContent = 'Render error: ' + (e?.message || e); } requestAnimationFrame(frame); }
+}
+function frame0() {
   const dt = Math.min(0.05, clock.getDelta()), t = clock.elapsedTime;
   updatePlayer(dt); updateRemotes(dt);
   for (const f of tickers) f(dt, t);
@@ -888,7 +915,9 @@ function hideLoading() {
   showStart();
 }
 async function boot() {
+  window.__vaultStarted = true; $('loadTxt').textContent = 'Starting engine';
   setupPipeline();
+  $('loadTxt').textContent = 'Reading the floor plan';
   await loadWorld();
   const av = await loadGLTF('assets/Soldier.gltf.json');
   if (av) { avatarSrc = av; AV_FWD = Math.PI; }
@@ -897,6 +926,7 @@ async function boot() {
   drawTV(0);
   requestAnimationFrame(frame);
   connectRoom();
+  hideLoading();
   await loadCars();
   hideLoading();
 }
@@ -919,6 +949,8 @@ function showStart() {
     try { canvas.requestPointerLock?.()?.catch?.(() => {}); } catch {}
   };
 }
+window.addEventListener('error', (e) => { if (!loadingHidden) $('loadTxt').textContent = 'Error: ' + e.message; });
+window.addEventListener('unhandledrejection', (e) => { if (!loadingHidden) $('loadTxt').textContent = 'Error: ' + (e.reason?.message || e.reason); });
 boot().catch((e) => { console.error(e); $('loadTxt').textContent = 'Load error: ' + (e?.message || e); });
 
 // test hook for automated screenshots
