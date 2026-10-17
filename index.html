@@ -1,0 +1,134 @@
+<title>The Vault Mancave</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bodoni+Moda:ital,opsz,wght@0,6..96,500;0,6..96,700;1,6..96,500&family=Manrope:wght@400;600;700&family=JetBrains+Mono:wght@500&display=swap">
+<style>
+/* Layout: full-bleed WebGL canvas, HUD pinned to corners, modal panels centered. Single dark look on purpose (night club lighting). */
+:root{
+  --ink:#0b0a09; --panel:rgba(16,14,12,.86); --line:rgba(214,178,110,.28);
+  --gold:#d6b26e; --cream:#f1e9db; --muted:#a59d90; --neon:#ff3d7f; --cyan:#3de0ff; --ok:#56d68b;
+  --display:"Bodoni Moda","Didot","Bodoni 72",Georgia,serif;
+  --body:"Manrope","Helvetica Neue",Arial,sans-serif;
+  --mono:"JetBrains Mono",ui-monospace,Menlo,monospace;
+  color-scheme:dark;
+}
+[hidden]{display:none!important}
+html,body{height:100%;margin:0;background:var(--ink);color:var(--cream);font-family:var(--body);overflow:hidden}
+#app{position:fixed;inset:0}
+canvas#gl{display:block;width:100%;height:100%;outline:none}
+.hud{position:fixed;pointer-events:none;z-index:5;text-shadow:0 1px 4px rgba(0,0,0,.9)}
+#hudTL{top:calc(14px + env(safe-area-inset-top,0px));left:max(16px,env(safe-area-inset-left,0px))}
+#hudTR{top:calc(14px + env(safe-area-inset-top,0px));right:max(16px,env(safe-area-inset-right,0px));text-align:right}
+#hudBL{bottom:calc(14px + env(safe-area-inset-bottom,0px));left:max(16px,env(safe-area-inset-left,0px))}
+#hudBR{bottom:calc(14px + env(safe-area-inset-bottom,0px));right:max(16px,env(safe-area-inset-right,0px));text-align:right}
+.brand{font-family:var(--display);font-size:22px;letter-spacing:.04em;color:var(--gold)}
+.brand i{color:var(--cream)}
+.zone{font-size:11px;letter-spacing:.22em;text-transform:uppercase;color:var(--muted);margin-top:2px}
+.chips{font-family:var(--mono);font-size:18px;color:var(--gold)}
+.chips small{font-family:var(--body);font-size:10px;letter-spacing:.2em;color:var(--muted);display:block}
+#players{font-size:12px;color:var(--muted);margin-top:8px;line-height:1.6}
+#players b{color:var(--cream);font-weight:600}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px;vertical-align:middle}
+.keys{font-size:11px;color:var(--muted);line-height:1.8}
+kbd{font-family:var(--mono);font-size:10px;border:1px solid var(--line);border-radius:3px;padding:1px 5px;color:var(--cream);background:rgba(255,255,255,.04)}
+#prompt{position:fixed;left:50%;bottom:22%;transform:translateX(-50%);z-index:6;pointer-events:none;
+  background:var(--panel);border:1px solid var(--line);padding:10px 16px;border-radius:2px;font-size:14px;white-space:nowrap}
+#prompt kbd{margin-right:8px}
+#crosshair{position:fixed;left:50%;top:50%;width:4px;height:4px;margin:-2px 0 0 -2px;border-radius:50%;background:rgba(241,233,219,.6);z-index:5;pointer-events:none}
+#chat{position:fixed;left:max(16px,env(safe-area-inset-left,0px));bottom:calc(120px + env(safe-area-inset-bottom,0px));width:min(360px,calc(100vw - 32px));z-index:6}
+#chatLog{font-size:13px;line-height:1.5;max-height:180px;overflow:hidden;display:flex;flex-direction:column;justify-content:flex-end;gap:2px;text-shadow:0 1px 3px #000}
+#chatLog div{opacity:.95;transition:opacity 1s}
+#chatLog div.old{opacity:0}
+#chatInput{display:none;margin-top:6px;width:100%;box-sizing:border-box;background:var(--panel);border:1px solid var(--line);color:var(--cream);font:inherit;padding:8px 10px;outline:none}
+#chatInput:focus{border-color:var(--gold)}
+/* modal */
+.modal{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;z-index:20;background:rgba(5,4,3,.55);backdrop-filter:blur(6px);
+  padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+.card{background:var(--panel);border:1px solid var(--line);padding:26px 28px;width:min(520px,100%);box-sizing:border-box;max-height:90vh;overflow:auto}
+.card h2{font-family:var(--display);font-weight:500;font-size:30px;margin:0 0 4px;color:var(--cream);text-wrap:balance}
+.card h2 em{color:var(--gold)}
+.eyebrow{font-size:10px;letter-spacing:.28em;text-transform:uppercase;color:var(--gold);margin-bottom:10px}
+.card p{color:var(--muted);line-height:1.6;font-size:14px;margin:8px 0}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:14px}
+button,.btn{font:600 13px var(--body);letter-spacing:.06em;background:transparent;color:var(--cream);border:1px solid var(--line);padding:10px 16px;cursor:pointer;border-radius:1px}
+button:hover{border-color:var(--gold);color:var(--gold)}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
+button.primary{background:var(--gold);color:#17120a;border-color:var(--gold)}
+button.primary:hover{background:#e7c788;color:#17120a}
+button:disabled{opacity:.4;cursor:default}
+input[type=text],select{font:inherit;background:rgba(255,255,255,.04);border:1px solid var(--line);color:var(--cream);padding:10px 12px;flex:1;min-width:0}
+.swatches{display:flex;gap:8px}
+.sw{width:26px;height:26px;border-radius:50%;border:2px solid transparent;cursor:pointer;padding:0}
+.sw.on{border-color:var(--cream)}
+.stat{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:14px}
+.stat div{border-top:1px solid var(--line);padding-top:8px}
+.stat b{display:block;font-family:var(--mono);font-size:18px;color:var(--cream);font-weight:500;font-variant-numeric:tabular-nums}
+.stat span{font-size:10px;letter-spacing:.2em;text-transform:uppercase;color:var(--muted)}
+#loading{position:fixed;inset:0;z-index:30;background:var(--ink);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px}
+#loading .brand{font-size:44px}
+#bar{width:min(320px,70vw);height:2px;background:rgba(255,255,255,.08)}
+#bar i{display:block;height:100%;width:0;background:var(--gold);transition:width .2s}
+#loadTxt{font-size:11px;letter-spacing:.24em;text-transform:uppercase;color:var(--muted)}
+/* games */
+.reels{display:flex;gap:10px;justify-content:center;margin:18px 0}
+.reel{width:90px;height:110px;border:1px solid var(--line);display:flex;align-items:center;justify-content:center;font-size:56px;background:linear-gradient(#1c1813,#0d0b09)}
+.result{font-family:var(--mono);text-align:center;min-height:22px;color:var(--gold)}
+.hand{display:flex;gap:6px;flex-wrap:wrap;min-height:74px;margin:6px 0}
+.pc{width:50px;height:72px;background:#f6f1e7;color:#111;border-radius:4px;display:flex;flex-direction:column;justify-content:space-between;padding:4px 6px;box-sizing:border-box;font:700 16px var(--body)}
+.pc.red{color:#b3122f}
+.pc.back{background:repeating-linear-gradient(45deg,#6b1424 0 6px,#8a1d31 6px 12px);border:2px solid #f6f1e7}
+.pc span:last-child{align-self:flex-end;transform:rotate(180deg)}
+.lbl{font-size:10px;letter-spacing:.24em;text-transform:uppercase;color:var(--muted);margin-top:10px}
+#snakeCv{display:block;margin:12px auto;background:#05060a;border:1px solid var(--cyan);max-width:100%;image-rendering:pixelated}
+.rgrid{display:grid;grid-template-columns:repeat(6,1fr);gap:4px;margin-top:10px}
+.rgrid button{padding:8px 0;font-family:var(--mono)}
+.rgrid button.r{background:#7d1523}.rgrid button.k{background:#151515}.rgrid button.g{background:#0f5a31}
+.rgrid button.sel{outline:2px solid var(--gold)}
+#rwheel{font-family:var(--mono);font-size:44px;text-align:center;margin:12px 0 4px}
+.note{font-size:12px;color:var(--muted);border-left:2px solid var(--line);padding-left:10px;margin-top:12px}
+@media (max-width:600px){ .keys{display:none} .brand{font-size:18px} }
+@media (prefers-reduced-motion:reduce){ #bar i{transition:none} }
+</style>
+
+<div id="app"><canvas id="gl" tabindex="0"></canvas></div>
+
+<div id="loading"><div class="brand">The <i>Vault</i></div><div id="bar"><i></i></div><div id="loadTxt">Polishing the cars</div></div>
+
+<div class="hud" id="hudTL"><div class="brand">The <i>Vault</i></div><div class="zone" id="zone">Garage</div><div id="players"></div></div>
+<div class="hud" id="hudTR"><div class="chips"><small>Chips</small><span id="chips">10,000</span></div></div>
+<div class="hud" id="hudBL"><div class="keys"><kbd>WASD</kbd> move &nbsp;<kbd>Shift</kbd> run &nbsp;<kbd>Mouse</kbd> look &nbsp;<kbd>E</kbd> interact &nbsp;<kbd>T</kbd> chat &nbsp;<kbd>Esc</kbd> menu</div></div>
+<div class="hud" id="hudBR"><div class="keys" id="fps"></div></div>
+<div id="crosshair" hidden></div>
+<div id="prompt" hidden></div>
+<div id="chat"><div id="chatLog"></div><input id="chatInput" type="text" maxlength="160" placeholder="Say something, Enter to send" autocomplete="off"></div>
+
+<div class="modal" id="mStart" hidden>
+  <div class="card">
+    <div class="eyebrow">Members only</div>
+    <h2>Welcome to <em>the Vault</em></h2>
+    <p>A private warehouse for the crew: garage, lounge with the big screen, casino floor, arcade and a boardroom. Everyone who opens this link right now shows up inside.</p>
+    <div class="lbl">Your name</div>
+    <div class="row" style="margin-top:6px"><input id="nameIn" type="text" maxlength="18" placeholder="Pax"></div>
+    <div class="lbl">Your colour</div>
+    <div class="row swatches" id="swatches" style="margin-top:6px"></div>
+    <div class="lbl">Graphics</div>
+    <div class="row" style="margin-top:6px"><select id="qualitySel"><option value="high">High: reflections, bloom, shadows</option><option value="medium">Medium</option><option value="low">Low: laptops on battery</option></select></div>
+    <div class="row"><button class="primary" id="enterBtn">Enter the Vault</button></div>
+  </div>
+</div>
+
+<div class="modal" id="mPanel" hidden><div class="card" id="panelCard"></div></div>
+
+<script type="importmap">
+{"imports":{
+  "three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+}}
+</script>
+<script>
+window.__vlog=function(m){var t=document.getElementById('loadTxt');if(t&&!document.getElementById('loading').hidden)t.textContent=m;};
+addEventListener('error',function(e){window.__verr=(e.message||(e.target&&e.target.src)||'unknown')+' @'+(e.filename||'').split('/').pop()+':'+e.lineno;__vlog('Error: '+window.__verr);},true);
+setTimeout(function(){if(window.__vaultStarted)return;var r=performance.getEntriesByType('resource').map(function(e){return e.name.split('?')[0].split('/').slice(-2).join('/')+':'+Math.round(e.duration)+':'+(e.responseStatus||'?')}).join(' | ');__vlog('Engine did not start. ERR='+(window.__verr||'none')+' || '+r);document.getElementById('loadTxt').style.cssText='font-size:10px;letter-spacing:0;text-transform:none;max-width:90vw;word-break:break-all';},15000);
+var __t0=Date.now();setInterval(function(){var L=document.getElementById('loading');if(L.hidden||Date.now()-__t0<30000)return;var t=document.getElementById('loadTxt');t.style.cssText='font-size:11px;letter-spacing:0;text-transform:none;max-width:90vw';t.textContent='v10 stuck at: '+(window.__stage||'old code (no stage)')+' | waiting on: '+(window.__pending||'-')+' | error: '+(window.__verr||'none')+' | frames: '+(window.__frames||0);},1000);
+</script>
+<script type="module" src="game.js?v=10" onerror="__vlog('game.js failed to load')"></script>
