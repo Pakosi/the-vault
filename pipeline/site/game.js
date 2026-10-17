@@ -4,8 +4,11 @@ import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
 import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+import { ShaderPass } from 'three/addons/postprocessing/ShaderPass.js';
 import { Reflector } from 'three/addons/objects/Reflector.js';
+import { CSS3DRenderer, CSS3DObject } from 'three/addons/renderers/CSS3DRenderer.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
+import { loadAvatarAssets, createAvatar, openCustomizer, defaultLook, EMOTES } from './avatar.js?v=11';
 
 // The world is pre-lit: Cycles global illumination is baked into lightmaps (architecture + props)
 // and vertex colours (furniture). Reflections come from baked HDR probes plus a planar floor mirror.
@@ -81,6 +84,27 @@ function guessQuality() {
   return (navigator.hardwareConcurrency || 4) >= 8 ? 'high' : 'medium';
 }
 
+// Drunk vision: wavy warp + double vision + edge blur, scaled by drunk.level.
+const DrunkShader = {
+  uniforms: { tDiffuse: { value: null }, amt: { value: 0 }, time: { value: 0 } },
+  vertexShader: 'varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }',
+  fragmentShader: `uniform sampler2D tDiffuse; uniform float amt; uniform float time; varying vec2 vUv;
+    void main(){
+      vec2 uv = vUv;
+      uv += amt * 0.012 * vec2(sin(uv.y * 9.0 + time * 1.7), cos(uv.x * 7.0 + time * 1.3));
+      vec2 off = amt * 0.018 * vec2(sin(time * 0.9), cos(time * 0.7));
+      vec4 a = texture2D(tDiffuse, uv), b = texture2D(tDiffuse, uv + off), c = texture2D(tDiffuse, uv - off * 0.6);
+      vec4 col = mix(a, (a + b + c) / 3.0, clamp(amt, 0.0, 1.0) * 0.85);
+      float v = smoothstep(0.9, 0.25, length(vUv - 0.5) * (1.0 + amt * 0.6));
+      col.rgb *= mix(1.0, v, clamp(amt * 0.8, 0.0, 0.8));
+      gl_FragColor = col;
+    }`,
+};
+let drunkPass = null;
+const drunk = { level: 0, t: 0, blackout: 0 };
+function setDrunk(v) { drunk.level = Math.max(0, v); if (drunkPass) drunkPass.enabled = drunk.level > 0.02; }
+function drunkLabel() { const l = drunk.level; return l < 0.05 ? '' : l < 0.35 ? 'Tipsy' : l < 0.7 ? 'Buzzed' : l < 1.0 ? 'Drunk' : 'Wasted'; }
+
 function setupPipeline() {
   Q = QUALITY[quality] || QUALITY.medium;
   renderer.setPixelRatio(Math.min(devicePixelRatio, Q.dpr) * dprScale);
@@ -96,6 +120,8 @@ function setupPipeline() {
     bloomPass = new UnrealBloomPass(new THREE.Vector2(size.x / 2, size.y / 2), +(params.get('bs') ?? 0.22), 0.4, +(params.get('bt') ?? 3.0));
     composer.addPass(bloomPass);
   }
+  drunkPass = new ShaderPass(DrunkShader); drunkPass.enabled = drunk.level > 0.02;
+  composer.addPass(drunkPass);
   composer.addPass(new OutputPass());
   setupReflector();
 }
@@ -308,7 +334,7 @@ function screenPlane(key, tex, extra = 0) {
 }
 let tvMat, tvCanvasTex, boardTex;
 const slotScreens = [], cabinets = [];
-const ARCADE = [{ name: 'NEON SNAKE', color: '#56d68b', play: () => openSnake() }, { name: 'ASTRO RUN', color: '#ff3d7f' }, { name: 'TURBO 88', color: '#ff8a3d' }, { name: 'GRID WARS', color: '#3de0ff' }];
+const ARCADE = [{ name: 'NEON SNAKE', color: '#56d68b', play: () => openSnake() }, { name: 'ASTRO RUN', color: '#ff3d7f', play: () => launchGame('astrorun', { cabinet: cabinets[1] }) }, { name: 'TURBO 88', color: '#ff8a3d', play: () => launchGame('turbo88', { cabinet: cabinets[2] }) }, { name: 'GRID WARS', color: '#3de0ff', play: () => launchGame('gridwars', { cabinet: cabinets[3] }) }];
 function buildScreens() {
   tvCanvasTex = canvasTex(1280, 720);
   tvMat = screenPlane('tv', tvCanvasTex, 0.1).material;
@@ -331,7 +357,7 @@ function drawSlotScreen(g, sym, i) {
 }
 function drawCabinets(t) {
   for (const c of cabinets) {
-    if (!c || (c.gm.play && snake.running)) continue;
+    if (!c || c.busy || (c.i === 0 && snake.running)) continue;
     const g = c.tex.userData.ctx;
     g.fillStyle = '#04050a'; g.fillRect(0, 0, 256, 200);
     g.fillStyle = c.gm.color;
@@ -386,16 +412,16 @@ function buildInteractions() {
     if (k === 'car') interact(x, z, it.r, () => 'Check out the ' + (CAR_INFO[layout.cars.find((c) => c.slot === it.slot)?.model]?.name || 'car'), () => openCar(it.slot));
     else if (k === 'tv') interact(x, z, it.r, () => 'Use the big screen', openTV);
     else if (k === 'sofa') interact(x, z, it.r, () => 'Use the big screen', openTV);
-    else if (k === 'pool') interact(x, z, it.r, () => 'Rack up a game of pool', () => toast('Pool goes live in a later update. The table is level, though.'));
+    else if (k === 'pool') interact(x, z, it.r, () => 'Rack up a game of pool', () => launchGame('pool'));
     else if (k === 'bar') interact(x, z, it.r, () => 'Order a drink', openBar);
-    else if (k === 'poker') interact(x, z, it.r, () => "Sit at the poker table", () => toast('Poker needs two of you at the table. Multiplayer poker is next on the list.'));
+    else if (k === 'poker') interact(x, z, it.r, () => "Sit down for Texas Hold'em", () => launchGame('poker'));
     else if (k === 'blackjack') interact(x, z, it.r, () => 'Play blackjack', openBlackjack);
     else if (k === 'roulette') interact(x, z, it.r, () => 'Play roulette', openRoulette);
     else if (k === 'slot') interact(x, z, it.r, () => 'Play the slot machine', () => openSlots(slotScreens[it.idx]));
     else if (k === 'arcade') { const gm = ARCADE[it.idx]; interact(x, z, it.r, () => gm.play ? `Play ${gm.name}` : `${gm.name} (out of order)`, () => gm.play ? gm.play() : toast(`${gm.name} gets plugged in during a later update.`)); }
-    else if (k === 'airhockey') interact(x, z, it.r, () => 'Air hockey', () => toast('Air hockey needs two players. Coming with multiplayer games.'));
+    else if (k === 'airhockey') interact(x, z, it.r, () => 'Play air hockey', () => launchGame('airhockey'));
     else if (k === 'board') interact(x, z, it.r, () => 'Put something on the boardroom screen', openBoard);
-    else if (k === 'chess') interact(x, z, it.r, () => 'Play chess', () => toast('Chess with a friend arrives in a later update. The pieces are set up.'));
+    else if (k === 'chess') interact(x, z, it.r, () => 'Play chess', () => launchGame('chess'));
   }
 }
 function openCar(slot) {
@@ -407,6 +433,22 @@ function openCar(slot) {
     <div class="row"><button data-close>Close</button></div>`);
   const b = $('spinCar'); if (b) b.onclick = () => { turntable.spin = !turntable.spin; b.textContent = turntable.spin ? 'Stop the turntable' : 'Spin the turntable'; };
 }
+tickers.push((dt, t) => {
+  if (drunk.level <= 0.02) { if (drunkPass?.enabled) setDrunk(0); return; }
+  drunk.level = Math.max(0, drunk.level - dt * 0.0035);
+  const a = Math.min(1.2, drunk.level);
+  if (drunkPass) { drunkPass.uniforms.amt.value = a; drunkPass.uniforms.time.value = t; }
+  camera.rotateZ(Math.sin(t * 0.8) * 0.045 * a);
+  camera.rotateX(Math.sin(t * 0.55 + 1) * 0.02 * a);
+  if (player.vel.lengthSq() > 0.3) { player.pos.x += Math.sin(t * 1.9) * dt * 0.9 * a; player.pos.z += Math.cos(t * 1.4) * dt * 0.9 * a; collide(player.pos); }
+  if (me) me.drunk = a;
+  if (drunk.level > 1.35 && !drunk.blackout) {
+    drunk.blackout = 1; $('loading').hidden = false; $('loadTxt').textContent = 'You blacked out';
+    $('bar').style.visibility = 'hidden';
+    broadcast('blacked out. Someone get them a water.');
+    setTimeout(() => { player.pos.set(0, 0, -4.2); setDrunk(0.45); drunk.blackout = 0; $('loading').hidden = true; $('bar').style.visibility = ''; toast('You wake up on the sofa. Your head hurts.'); }, 3500);
+  }
+});
 const turntable = { spin: false };
 tickers.push((dt) => { const h = cars.hero; if (h && turntable.spin) h.obj.rotation.y += dt * 0.35; });
 function openBar() {
@@ -414,7 +456,13 @@ function openBar() {
   openPanel(`<div class="eyebrow">The bar</div><h2>What are you <em>having?</em></h2>
     <div class="row">${drinks.map((d, i) => `<button data-d="${i}">${d.replace(/^an? /, '')}</button>`).join('')}</div>
     <div class="row"><button data-close>Never mind</button></div>`);
-  $('panelCard').querySelectorAll('[data-d]').forEach((b) => (b.onclick = () => { broadcast(`ordered ${drinks[+b.dataset.d]} at the bar`); closePanel(); }));
+  $('panelCard').querySelectorAll('[data-d]').forEach((b) => (b.onclick = () => {
+    const i = +b.dataset.d; broadcast(`ordered ${drinks[i]} at the bar`); closePanel();
+    if (i === 3) { toast('Espresso martini. You feel a little sharper.'); }
+    me?.emote?.('drink');
+    setTimeout(() => { setDrunk(drunk.level + (i === 3 ? 0.12 : i === 4 ? 0.18 : 0.28)); const l = drunkLabel(); if (l) toast(`You're feeling ${l.toLowerCase()}.`); presence({ dr: +drunk.level.toFixed(2) }); }, 2600);
+  }));
+  if (drunk.level > 0.05) { const w = document.createElement('div'); w.className = 'row'; w.innerHTML = '<button id="water">Glass of water (sober up a bit)</button>'; $('panelCard').appendChild(w); $('water').onclick = () => { me?.emote?.('drink'); setDrunk(drunk.level * 0.6); closePanel(); }; }
 }
 function openBoard() {
   openPanel(`<div class="eyebrow">Boardroom</div><h2>Put it on the <em>screen</em></h2>
@@ -481,44 +529,121 @@ function playFile(file) {
     } else { media.audio = el; }
   }).catch(() => toast('That file would not play in this browser.'));
 }
+// YouTube on the big screen: a real <iframe> placed in 3D with CSS3DRenderer, layered over the WebGL canvas.
+const yt = { renderer: null, scene: null, obj: null, iframe: null, id: null, interactive: false, lastVol: -1 };
+function ytParse(s) {
+  s = String(s || '').trim();
+  let m = s.match(/[?&]list=([\w-]+)/); const list = m && m[1];
+  m = s.match(/(?:youtu\.be\/|[?&]v=|\/embed\/|\/shorts\/|\/live\/)([\w-]{11})/) || s.match(/^([\w-]{11})$/);
+  return m ? { v: m[1], list } : list ? { v: null, list } : null;
+}
+function ytPlay(ref, fromRemote) {
+  const r = typeof ref === 'string' ? ytParse(ref) : ref; if (!r) return false;
+  media.audio?.pause(); stopVideo(); media.playing = false;
+  const sc = layout.screens.tv;
+  if (!yt.renderer) {
+    yt.renderer = new CSS3DRenderer();
+    Object.assign(yt.renderer.domElement.style, { position: 'fixed', inset: '0', zIndex: '2', pointerEvents: 'none' });
+    document.body.appendChild(yt.renderer.domElement);
+    yt.renderer.setSize(innerWidth, innerHeight);
+    yt.scene = new THREE.Scene();
+  }
+  if (yt.obj) { yt.scene.remove(yt.obj); yt.obj.element.remove(); }
+  const W = 1280, H = 720, div = document.createElement('div');
+  div.style.cssText = `width:${W}px;height:${H}px;background:#000`;
+  const f = document.createElement('iframe');
+  const q = 'autoplay=1&playsinline=1&rel=0&modestbranding=1&enablejsapi=1&origin=' + encodeURIComponent(location.origin) + (r.list ? '&list=' + r.list : '') + (r.v && !r.list ? '&loop=1&playlist=' + r.v : '');
+  f.src = r.v ? `https://www.youtube.com/embed/${r.v}?${q}` : `https://www.youtube.com/embed/videoseries?${q}`;
+  f.allow = 'autoplay; encrypted-media; picture-in-picture'; f.style.cssText = 'width:100%;height:100%;border:0;pointer-events:none';
+  div.appendChild(f);
+  yt.obj = new CSS3DObject(div);
+  yt.obj.position.set(sc.center[0], sc.center[1], sc.center[2] + 0.01);
+  yt.obj.rotation.y = sc.ry || 0;
+  yt.obj.scale.setScalar(sc.size[0] / W);
+  yt.scene.add(yt.obj); yt.iframe = f; yt.id = r; yt.lastVol = -1;
+  if (tvMat) { tvMat.color.setScalar(0); }
+  media.title = 'YouTube';
+  if (!fromRemote && room?.connected()) room.emit('chat', { n: player.name, c: player.color, t: r.v || r.list, k: 'tv', yt: r }).catch(() => {});
+  return true;
+}
+function ytStop() {
+  if (yt.obj) { yt.scene.remove(yt.obj); yt.obj.element.remove(); yt.obj = null; yt.iframe = null; yt.id = null; }
+  ytInteractive(false);
+  if (tvMat) tvMat.color.setScalar(1.1);
+}
+function ytInteractive(on) {
+  yt.interactive = on && !!yt.iframe;
+  if (yt.iframe) yt.iframe.style.pointerEvents = yt.interactive ? 'auto' : 'none';
+  if (yt.renderer) yt.renderer.domElement.style.pointerEvents = 'none';
+  if (yt.interactive && document.pointerLockElement) document.exitPointerLock();
+}
+function ytCmd(func, args = []) { yt.iframe?.contentWindow?.postMessage(JSON.stringify({ event: 'command', func, args }), '*'); }
+tickers.push((dt, t) => {
+  if (!yt.obj) return;
+  const sc = layout.screens.tv;
+  // hide when looking at the back of the screen or far away; fade volume with distance from the lounge
+  const nx = Math.sin(sc.ry || 0), nz = Math.cos(sc.ry || 0);
+  const vx = camera.position.x - sc.center[0], vz = camera.position.z - sc.center[2];
+  const front = vx * nx + vz * nz > 0.2;
+  yt.obj.element.style.display = front ? '' : 'none';
+  const d = Math.hypot(player.pos.x - sc.center[0], player.pos.z - sc.center[2]);
+  const vol = Math.round(Math.max(0, Math.min(1, 1.25 - d / 22)) * 100 * masterVol);
+  if (Math.abs(vol - yt.lastVol) > 2 && (t % 0.5) < dt) { ytCmd('setVolume', [vol]); yt.lastVol = vol; }
+  if (yt.interactive && d > 6) ytInteractive(false);
+  yt.renderer.render(yt.scene, camera);
+});
+addEventListener('resize', () => yt.renderer?.setSize(innerWidth, innerHeight));
+const YT_PICKS = [['Lofi hip hop radio', 'jfKfPfyJRdk'], ['Synthwave radio', '4xDzrJKXOOY']];
 function openTV() {
   openPanel(`<div class="eyebrow">Big screen</div><h2>What's <em>on?</em></h2>
-    <p>Music plays through the room and gets quieter as you walk away from the lounge.</p>
-    <div class="row"><button class="primary" id="tvDefault">Play "Zen Ball Drop"</button><button id="tvStop">Stop</button></div>
-    <div class="lbl">From your computer</div>
-    <div class="row"><input type="file" id="tvFile" accept="audio/*,video/*"></div>
-    <p class="note">YouTube can't be embedded inside this Claude page, so the screen plays music and video files for now. Once the Vault runs on its own web address, the screen can stream YouTube for everyone in sync.</p>
+    <div class="lbl">YouTube</div>
+    <div class="row"><input type="text" id="ytIn" placeholder="Paste a YouTube link" style="flex:1;min-width:220px"><button class="primary" id="ytGo">Play</button></div>
+    <div class="row">${YT_PICKS.map(([n, id]) => `<button data-yt="${id}">${n}</button>`).join('')}</div>
+    <div class="row">${yt.iframe ? '<button id="ytTouch">Use the screen controls</button><button id="ytOff">Turn YouTube off</button>' : ''}<a href="https://www.youtube.com/" target="_blank" rel="noopener" style="color:var(--gold);font-size:13px">Find something on YouTube ↗</a></div>
+    <p class="note">Volume follows you: loud on the sofa, quieter across the room. If a video does not start, press "Use the screen controls" and click play on the TV.</p>
+    <div class="lbl">Music</div>
+    <div class="row"><button id="tvDefault">Play "Zen Ball Drop"</button><input type="file" id="tvFile" accept="audio/*,video/*"><button id="tvStop">Stop everything</button></div>
     <div class="row"><button data-close>Close</button></div>`);
-  $('tvDefault').onclick = () => { playDefaultTrack(); closePanel(); };
-  $('tvStop').onclick = () => { stopAll(); closePanel(); };
-  $('tvFile').onchange = (e) => { const f = e.target.files[0]; if (f) { playFile(f); closePanel(); } };
+  const go = (v) => { if (ytPlay(v)) { closePanel(); toast('Playing on the big screen. Walk away and it gets quieter.'); } else toast('That does not look like a YouTube link.'); };
+  $('ytGo').onclick = () => go($('ytIn').value);
+  $('ytIn').onkeydown = (e) => { e.stopPropagation(); if (e.key === 'Enter') go($('ytIn').value); };
+  $('panelCard').querySelectorAll('[data-yt]').forEach((b) => (b.onclick = () => go(b.dataset.yt)));
+  if ($('ytTouch')) $('ytTouch').onclick = () => { closePanel(); ytInteractive(true); toast('Mouse is free: click the TV controls. Walk away from the TV to get the mouse back.'); };
+  if ($('ytOff')) $('ytOff').onclick = () => { ytStop(); closePanel(); };
+  $('tvDefault').onclick = () => { ytStop(); playDefaultTrack(); closePanel(); };
+  $('tvStop').onclick = () => { ytStop(); stopAll(); closePanel(); };
+  $('tvFile').onchange = (e) => { const f = e.target.files[0]; if (f) { ytStop(); playFile(f); closePanel(); } };
 }
 
 // ---------------------------------------------------------------- player + avatars
 const player = { pos: new THREE.Vector3(-2, 0, 6), vel: new THREE.Vector3(), ry: Math.PI * 0.5, anim: 0, name: 'Guest', color: COLORS[0] };
-let avatarSrc = null, me = null, AV_FWD = 0;
+let me = null, AV_FWD = 0;
 const remotes = new Map();
 const blobTex = canvasTex(128, 128, (g) => { const r = g.createRadialGradient(64, 64, 4, 64, 64, 62); r.addColorStop(0, 'rgba(0,0,0,0.55)'); r.addColorStop(1, 'rgba(0,0,0,0)'); g.fillStyle = r; g.fillRect(0, 0, 128, 128); });
-function makeAvatar(color, name) {
+let avAssets = null;
+let myLook = store.get('look', null);
+function makeAvatar(color, name, look) {
   const root = new THREE.Group();
-  let mixer = null; const actions = {};
-  if (avatarSrc) {
-    const m = SkeletonUtils.clone(avatarSrc.scene);
-    m.traverse((o) => { if (o.isMesh) { o.frustumCulled = false; o.material = o.material.clone(); o.material.envMapIntensity = 0.9; } });
-    root.add(m);
-    mixer = new THREE.AnimationMixer(m);
-    for (const clip of avatarSrc.animations) actions[clip.name] = mixer.clipAction(clip);
-    ['Idle', 'Walk', 'Run'].forEach((n) => { if (actions[n]) { actions[n].play(); actions[n].setEffectiveWeight(n === 'Idle' ? 1 : 0); } });
-  } else {
-    const b = new THREE.Mesh(new THREE.CapsuleGeometry(0.3, 1.1, 6, 12), new THREE.MeshStandardMaterial({ color })); b.position.y = 0.85; root.add(b);
-  }
+  let av = null;
+  if (avAssets) { try { av = createAvatar(avAssets, look || defaultLook()); root.add(av.root); } catch (e) { console.warn('avatar failed', e); av = null; } }
+  if (!av) { const b = new THREE.Mesh(new THREE.CapsuleGeometry(0.3, 1.1, 6, 12), new THREE.MeshStandardMaterial({ color })); b.position.y = 0.85; root.add(b); }
   const blob = new THREE.Mesh(new THREE.PlaneGeometry(1.1, 1.1), new THREE.MeshBasicMaterial({ map: blobTex, transparent: true, depthWrite: false, toneMapped: false }));
   blob.rotation.x = -Math.PI / 2; blob.position.y = 0.012; root.add(blob);
   const ring = new THREE.Mesh(new THREE.RingGeometry(0.4, 0.46, 48), new THREE.MeshBasicMaterial({ color: new THREE.Color(color).multiplyScalar(1.4), transparent: true, opacity: 0.7, depthWrite: false }));
   ring.rotation.x = -Math.PI / 2; ring.position.y = 0.016; root.add(ring);
-  const tag = makeTag(name, color); tag.position.y = 2.1; root.add(tag);
+  const tagY = () => (av?.height || 1.8) + 0.3;
+  const tag = makeTag(name, color); tag.position.y = tagY(); root.add(tag);
   scene.add(root);
-  return { root, mixer, actions, ring, tag, weights: [1, 0, 0], setName(n, c) { root.remove(this.tag); this.tag = makeTag(n, c); this.tag.position.y = 2.1; root.add(this.tag); this.ring.material.color.set(c).multiplyScalar(1.4); } };
+  return {
+    root, av, ring, tag, lookKey: JSON.stringify(look || null),
+    setName(n, c) { root.remove(this.tag); this.tag = makeTag(n, c); this.tag.position.y = tagY(); root.add(this.tag); this.ring.material.color.set(c).multiplyScalar(1.4); },
+    setLook(l) { if (!av) return; this.lookKey = JSON.stringify(l); av.setLook(l); this.tag.position.y = tagY(); },
+    emote(n) { av?.emote(n); },
+    set drunk(v) { if (av) av.drunk = v; },
+    get busy() { return !!av?.busy; },
+    update(dt, speed, run) { av?.update(dt, { speed, run }); },
+    dispose() { av?.dispose?.(); scene.remove(root); },
+  };
 }
 function makeTag(name, color) {
   const t = canvasTex(256, 64, (g, Wd) => {
@@ -529,24 +654,22 @@ function makeTag(name, color) {
   const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, depthTest: true, transparent: true, toneMapped: false }));
   s.scale.set(1.2, 0.3, 1); return s;
 }
-function animateAvatar(av, anim, dt) {
-  if (!av.mixer) return;
-  const target = [anim === 0 ? 1 : 0, anim === 1 ? 1 : 0, anim === 2 ? 1 : 0];
-  ['Idle', 'Walk', 'Run'].forEach((n, i) => { av.weights[i] += (target[i] - av.weights[i]) * Math.min(1, dt * 8); av.actions[n]?.setEffectiveWeight(av.weights[i]); });
-  av.mixer.update(dt);
-}
+function animateAvatar(w, anim, dt, speed) { w.update(dt, speed ?? [0, 1.5, 4.5][anim] ?? 0, anim === 2); }
 
 // ---------------------------------------------------------------- input + camera
 const keys = {};
 let yaw = Math.PI * 0.5, pitch = 0.2, camDist = 3.4, locked = false, dragging = false, panelOpen = false, chatOpen = false, entered = false;
 addEventListener('keydown', (e) => {
   if (chatOpen) { if (e.key === 'Escape') closeChat(); return; }
-  if (panelOpen) { if (e.key === 'Escape') closePanel(); snake.key(e); return; }
+  if (panelOpen) { if (e.key === 'Escape' || (e.code === 'KeyM' && menuOpen)) closePanel(); snake.key(e); return; }
   if (!entered) return;
   keys[e.code] = true;
   if (e.code === 'KeyE' && nearest) { e.preventDefault(); nearest.act(); }
   if (e.code === 'KeyT' || e.code === 'Enter') { e.preventDefault(); openChat(); }
-  if (e.code === 'Escape' && !locked) openMenu();
+  if (e.code === 'KeyM' && !panelOpen && !chatOpen) { e.preventDefault(); openMenu(); }
+  if (e.code === 'KeyC') { e.preventDefault(); openLook(); }
+  if (e.code === 'KeyG') { e.preventDefault(); openEmotes(); }
+  const n = +e.key; if (n >= 1 && n <= EMOTES.length && !e.repeat) playEmote(EMOTES[n - 1]);
 });
 addEventListener('keyup', (e) => { keys[e.code] = false; });
 addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
@@ -602,7 +725,7 @@ function updatePlayer(dt) {
   const sp = player.vel.length();
   if (sp > 0.2) { const target = Math.atan2(player.vel.x, player.vel.z); let d = target - player.ry; d = Math.atan2(Math.sin(d), Math.cos(d)); player.ry += d * Math.min(1, dt * 12); }
   player.anim = sp < 0.3 ? 0 : sp < 3.0 ? 1 : 2;
-  if (me) { me.root.position.copy(player.pos); me.root.rotation.y = player.ry + AV_FWD; animateAvatar(me, player.anim, dt); if (me.mixer && player.anim === 1) me.actions.Walk.timeScale = sp / 1.6; }
+  if (me) { me.root.position.copy(player.pos); me.root.rotation.y = player.ry + AV_FWD; animateAvatar(me, player.anim, dt, sp); }
 
   _tgt.copy(player.pos).y += 1.55;
   _cam.set(Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), Math.cos(yaw) * Math.cos(pitch)).multiplyScalar(camDist).add(_tgt).addScaledVector(_right, 0.42);
@@ -614,7 +737,7 @@ function updatePlayer(dt) {
   for (const it of interactables) { const d = Math.hypot(it.pos.x - player.pos.x, it.pos.z - player.pos.z); if (d < it.r && d < best) { best = d; nearest = it; } }
   const pr = $('prompt');
   if (nearest && !panelOpen && entered) { pr.innerHTML = `<kbd>E</kbd>${nearest.label()}`; pr.hidden = false; } else pr.hidden = true;
-  $('zone').textContent = zoneAt(player.pos);
+  const dl = drunkLabel(); $('zone').textContent = zoneAt(player.pos) + (dl ? ' · ' + dl : '');
 }
 function zoneAt(p) {
   if (p.x < -8.5) return 'Garage';
@@ -628,23 +751,76 @@ function zoneAt(p) {
 // ---------------------------------------------------------------- chips + UI panels
 let chips = store.get('chips', 10000);
 function setChips(v) { chips = Math.max(0, Math.round(v)); store.set('chips', chips); $('chips').textContent = chips.toLocaleString(); presence({ ch: chips }); if (chips === 0) { setTimeout(() => { toast('The house spots you 5,000 chips. Pace yourself.'); setChips(5000); }, 1500); } }
-function openPanel(html) {
+const panelCleanups = [];
+function openPanel(html, opts = {}) {
+  while (panelCleanups.length) { try { panelCleanups.pop()(); } catch (e) { console.warn(e); } }
+  $('panelCard').classList.toggle('wide', !!opts.wide);
   $('panelCard').innerHTML = html; $('mPanel').hidden = false; panelOpen = true;
   if (document.pointerLockElement) document.exitPointerLock();
   $('panelCard').querySelectorAll('[data-close]').forEach((b) => (b.onclick = closePanel));
   for (const k in keys) keys[k] = false;
 }
-function closePanel() { $('mPanel').hidden = true; panelOpen = false; snake.stop(); canvas.focus(); }
+function closePanel() {
+  $('mPanel').hidden = true; panelOpen = false; snake.stop();
+  while (panelCleanups.length) { try { panelCleanups.pop()(); } catch (e) { console.warn(e); } }
+  canvas.focus();
+}
+// Contract for the self-contained games in games/*.js: `export default function start(api, opts)`.
+const gameApi = {
+  open: (html, opts) => { openPanel(html, opts); return $('panelCard'); },
+  close: () => closePanel(),
+  onClose: (fn) => panelCleanups.push(fn),
+  chips: () => chips,
+  addChips: (d) => setChips(chips + d),
+  toast: (m) => toast(m),
+  broadcast: (t) => broadcast(t),
+  playerName: () => player.name,
+  playerColor: () => player.color,
+  mirror: null,
+};
+const gameMods = {};
+async function launchGame(name, opts = {}) {
+  try {
+    gameMods[name] ||= await import(`./games/${name}.js?v=${GAMES_V}`);
+    const cab = opts.cabinet;
+    gameApi.mirror = cab ? (cv) => { cab.tex.userData.ctx.drawImage(cv, 0, 0, 256, 200); cab.tex.needsUpdate = true; } : () => {};
+    if (cab) cab.busy = true;
+    gameMods[name].default(gameApi, opts);
+    if (cab) panelCleanups.push(() => { cab.busy = false; });
+  } catch (e) { console.error(e); toast('That game failed to load. Try again in a moment.'); }
+}
+const GAMES_V = 11;
 $('mPanel').addEventListener('mousedown', (e) => { if (e.target.id === 'mPanel') closePanel(); });
 function toast(msg) { addChat(null, msg, true); }
 let masterVol = store.get('vol', 0.8);
+let emSeq = 0;
+function playEmote(name) {
+  if (!me) return;
+  if (name === 'drink') { openBar(); return; }
+  me.emote(name); presence({ em: [name, ++emSeq] });
+}
+function openEmotes() {
+  openPanel(`<div class="eyebrow">Emotes · or press 1 to ${EMOTES.length}</div><h2>Express <em>yourself</em></h2>
+    <div class="row">${EMOTES.map((n, i) => `<button data-em="${n}"><kbd>${i + 1}</kbd> ${n[0].toUpperCase() + n.slice(1)}</button>`).join('')}</div>
+    <div class="row"><button data-close>Close</button></div>`);
+  $('panelCard').querySelectorAll('[data-em]').forEach((b) => (b.onclick = () => { closePanel(); playEmote(b.dataset.em); }));
+}
+function openLook() {
+  openCustomizer(gameApi, myLook || defaultLook(), (look) => {
+    myLook = look; store.set('look', look); me?.setLook(look); presence({ lk: look });
+    toast('New look saved. Everyone in the Vault sees it.');
+  });
+}
+let menuOpen = false;
 function openMenu() {
   openPanel(`<div class="eyebrow">Paused</div><h2>The <em>Vault</em></h2>
     <div class="lbl">Graphics</div>
     <div class="row"><select id="qSel2">${Object.keys(QUALITY).map((q) => `<option value="${q}" ${q === quality ? 'selected' : ''}>${q[0].toUpperCase() + q.slice(1)}</option>`).join('')}</select></div>
     <div class="lbl">Music volume</div><div class="row"><input id="vol" type="range" min="0" max="1" step="0.05" value="${masterVol}" style="flex:1"></div>
     <p class="note">Chips live in this browser only. Everyone online right now is listed top left.</p>
-    <div class="row"><button class="primary" data-close>Back inside</button><button id="credBtn">Credits</button></div>`);
+    <div class="row"><button class="primary" data-close>Back inside</button><button id="lookBtn">Change character</button><button id="emBtn">Emotes</button><button id="credBtn">Credits</button></div>`);
+  $('lookBtn').onclick = openLook; $('emBtn').onclick = openEmotes;
+  menuOpen = true; panelCleanups.push(() => { menuOpen = false; });
   $('qSel2').onchange = (e) => { quality = e.target.value; store.set('quality', quality); dprScale = 1; setupPipeline(); };
   $('vol').oninput = (e) => { masterVol = +e.target.value; store.set('vol', masterVol); };
   $('credBtn').onclick = openCredits;
@@ -838,6 +1014,7 @@ async function connectRoom() {
   room.on('chat', (m) => {
     const d = m.data || {}; const n = String(d.n || 'Someone').slice(0, 18), t = String(d.t || '').slice(0, 160), c = /^#[0-9a-f]{6}$/i.test(d.c) ? d.c : null;
     if (d.k === 'board') { drawBoard(t, n); addChat(n, 'put something on the boardroom screen', true); return; }
+    if (d.k === 'tv' && d.yt) { ytPlay(d.yt, true); addChat(n, 'put something on the big screen', true); return; }
     addChat(n, t, !!d.sys, c);
   });
   room.onPeers(() => syncRemotes());
@@ -852,11 +1029,14 @@ function syncRemotes() {
     seen.add(p.peer);
     const name = String(s.n || 'Guest').slice(0, 18), color = /^#[0-9a-f]{6}$/i.test(s.c) ? s.c : '#f1e9db';
     let r = remotes.get(p.peer);
-    if (!r) { r = { av: makeAvatar(color, name), name, color, target: new THREE.Vector3(), ry: 0, anim: 0, chips: 0 }; remotes.set(p.peer, r); r.av.root.position.set(+s.p[0] || 0, 0, +s.p[1] || 0); addChat(name, 'walked in', true); }
+    if (!r) { r = { av: makeAvatar(color, name, s.lk), name, color, target: new THREE.Vector3(), ry: 0, anim: 0, chips: 0 }; remotes.set(p.peer, r); r.av.root.position.set(+s.p[0] || 0, 0, +s.p[1] || 0); addChat(name, 'walked in', true); }
     if (r.name !== name || r.color !== color) { r.name = name; r.color = color; r.av.setName(name, color); }
     r.target.set(+s.p[0] || 0, 0, +s.p[1] || 0); r.ry = +s.p[2] || 0; r.anim = s.a | 0; r.chips = +s.ch || 0;
+    if (s.lk && JSON.stringify(s.lk) !== r.av.lookKey) r.av.setLook(s.lk);
+    if (Array.isArray(s.em) && s.em[1] !== r.emSeq) { if (r.emSeq !== undefined && EMOTES.includes(s.em[0])) r.av.emote(s.em[0]); r.emSeq = s.em[1]; }
+    r.av.drunk = Math.min(1, +s.dr || 0);
   }
-  for (const [k, r] of remotes) if (!seen.has(k)) { scene.remove(r.av.root); remotes.delete(k); addChat(r.name, 'left', true); }
+  for (const [k, r] of remotes) if (!seen.has(k)) { r.av.dispose(); remotes.delete(k); addChat(r.name, 'left', true); }
   renderPlayers();
 }
 function renderPlayers() {
@@ -890,7 +1070,7 @@ function frame0() {
   if (el) { const dist = Math.hypot(player.pos.x, player.pos.z + 9); el.volume = masterVol * Math.max(0.12, Math.min(1, 1.25 - dist / 30)); }
   presTimer += dt;
   if (presTimer > 1 / 15 && entered) { presTimer = 0; presence({ p: [+player.pos.x.toFixed(2), +player.pos.z.toFixed(2), +player.ry.toFixed(2)], a: player.anim }); }
-  if (Q.bloom || Q.msaa) composer.render(); else renderer.render(scene, camera);
+  if (Q.bloom || Q.msaa || drunkPass?.enabled) composer.render(); else renderer.render(scene, camera);
   frames++; fpsT += dt;
   if (fpsT > 1) {
     const fps = frames / fpsT; $('fps').textContent = `${Math.round(fps)} fps · ${quality}`;
@@ -922,11 +1102,17 @@ async function boot() {
   setupPipeline();
   $('loadTxt').textContent = 'Reading the floor plan';
   await loadWorld();
+  window.__stage = 'installing extras';
+  if (params.get('fx') !== '0') {
+    try {
+      const fx = await import(`./fx.js?v=${GAMES_V}`);
+      await fx.default({ THREE, scene, camera, renderer, layout, tickers, interact, colliders, toast, broadcast, player, launchGame, gameApi, media, HALL, envHall, envGarage, cars });
+    } catch (e) { console.warn('fx failed', e); }
+  }
   window.__stage = 'loading avatar';
-  const av = await loadGLTF('assets/Soldier.gltf.json');
   window.__stage = 'avatar loaded';
-  if (av) { avatarSrc = av; AV_FWD = Math.PI; }
-  me = makeAvatar(player.color, player.name); me.tag.visible = false;
+  try { avAssets = await loadAvatarAssets(gltfLoader, 'assets/'); } catch (e) { console.warn('avatar assets failed', e); }
+  me = makeAvatar(player.color, player.name, myLook); me.tag.visible = false;
   const sp = layout.spawn; player.pos.set(sp[0], 0, sp[2]); yaw = sp[3];
   drawTV(0);
   requestAnimationFrame(frame);
@@ -942,12 +1128,17 @@ function showStart() {
   $('nameIn').value = player.name; $('qualitySel').value = quality;
   COLORS.forEach((c) => { const b = document.createElement('button'); b.className = 'sw' + (c === player.color ? ' on' : ''); b.style.background = c; b.setAttribute('aria-label', 'Colour ' + c); b.onclick = () => { player.color = c; sw.querySelectorAll('.sw').forEach((x) => x.classList.toggle('on', x === b)); }; sw.append(b); });
   $('mStart').hidden = false; panelOpen = true;
+  $('startLook').onclick = () => {
+    $('mStart').hidden = true;
+    openCustomizer(gameApi, myLook || defaultLook(), (look) => { myLook = look; store.set('look', look); me?.setLook(look); });
+    panelCleanups.push(() => setTimeout(() => { if (!entered) { $('mStart').hidden = false; panelOpen = true; } }, 0));
+  };
   $('enterBtn').onclick = () => {
     player.name = ($('nameIn').value.trim() || 'Guest').slice(0, 18); store.set('name', player.name); store.set('color', player.color);
     if ($('qualitySel').value !== quality) { quality = $('qualitySel').value; store.set('quality', quality); setupPipeline(); }
     me.setName(player.name, player.color); me.tag.visible = false;
     $('mStart').hidden = true; panelOpen = false; entered = true;
-    presence({ n: player.name, c: player.color, ch: chips });
+    presence({ n: player.name, c: player.color, ch: chips, lk: myLook || undefined });
     setChips(chips);
     playDefaultTrack();
     addChat(null, 'Click to look around with the mouse. Walk up to anything glowing and press E.', true);
@@ -960,4 +1151,4 @@ window.addEventListener('unhandledrejection', (e) => { if (!loadingHidden) $('lo
 boot().catch((e) => { console.error(e); $('loadTxt').textContent = 'Load error: ' + (e?.message || e); });
 
 // test hook for automated screenshots
-window.__vault = { player, setView(x, z, y, p, d) { player.pos.set(x, 0, z); yaw = y; pitch = p; camDist = d ?? camDist; }, enter() { $('enterBtn').click(); }, get fps() { return $('fps').textContent; }, get ready() { return Object.keys(cars).length; } };
+window.__vault = { player, setView(x, z, y, p, d) { player.pos.set(x, 0, z); yaw = y; pitch = p; camDist = d ?? camDist; }, enter() { $('enterBtn').click(); }, get fps() { return $('fps').textContent; }, get ready() { return Object.keys(cars).length; }, launchGame, playEmote, openLook, ytPlay, setDrunk, get me() { return me; } };

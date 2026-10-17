@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Avatar Lab</title>
+<style>
+:root{--ink:#0b0a09;--panel:rgba(16,14,12,.92);--line:rgba(214,178,110,.28);--gold:#d6b26e;--cream:#f1e9db;--muted:#a59d90;--body:"Manrope","Helvetica Neue",Arial,sans-serif;--display:Georgia,serif;color-scheme:dark}
+html,body{margin:0;height:100%;background:#0b0a09;color:var(--cream);font-family:var(--body);overflow:hidden}
+canvas#gl{display:block;width:100vw;height:100vh}
+#ui{position:fixed;left:12px;top:12px;display:flex;gap:6px;flex-wrap:wrap;max-width:calc(100vw - 24px)}
+button{font:600 12px var(--body);background:rgba(16,14,12,.8);color:var(--cream);border:1px solid var(--line);padding:7px 10px;cursor:pointer}
+button:hover,button.primary{border-color:var(--gold);color:var(--gold)}
+button.primary{background:var(--gold);color:#17120a}
+.modal{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(5,4,3,.55);padding:16px}
+.card{background:var(--panel);border:1px solid var(--line);padding:22px 24px;width:min(520px,100%);box-sizing:border-box;max-height:94vh;overflow:auto}
+.card.wide{width:min(900px,100%)}
+.card h2{font-family:var(--display);font-weight:500;font-size:28px;margin:0 0 8px}.card h2 em{color:var(--gold)}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-top:14px}
+[hidden]{display:none!important}
+</style>
+<script type="importmap">{"imports":{"three":"/node_modules/three/build/three.module.js","three/addons/":"/node_modules/three/examples/jsm/"}}</script>
+</head><body>
+<canvas id="gl"></canvas>
+<div id="ui"></div>
+<div class="modal" id="mPanel" hidden><div class="card" id="panelCard"></div></div>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { SKINS, EMOTES, loadAvatarAssets, createAvatar, openCustomizer } from './avatar.js';
+
+// URL params: skins=a,b | emote=drink | t=1.2 (seconds simulated) | drunk=0.8 | speed=1.5 | cam=face|full|side | yaw=0 | acc=a,b | still=1
+const q = new URLSearchParams(location.search);
+const renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('gl'), antialias: true });
+renderer.setPixelRatio(1); renderer.setSize(innerWidth, innerHeight, false);
+renderer.outputColorSpace = THREE.SRGBColorSpace; renderer.toneMapping = THREE.AgXToneMapping; renderer.toneMappingExposure = 1.15;
+const scene = new THREE.Scene(); scene.background = new THREE.Color(0x1a1612);
+const pm = new THREE.PMREMGenerator(renderer); scene.environment = pm.fromScene(new RoomEnvironment(), 0.04).texture;
+scene.add(new THREE.HemisphereLight(0xfff0dd, 0x221a12, 0.6));
+const key = new THREE.DirectionalLight(0xffe2b8, 1.8); key.position.set(2, 4, 3); scene.add(key);
+const floor = new THREE.Mesh(new THREE.PlaneGeometry(40, 40), new THREE.MeshStandardMaterial({ color: 0x2a231c, roughness: 0.6 })); floor.rotation.x = -Math.PI / 2; scene.add(floor);
+const cam = new THREE.PerspectiveCamera(30, innerWidth / innerHeight, 0.05, 100);
+
+const assets = await loadAvatarAssets(new GLTFLoader(), 'assets/');
+const ids = (q.get('skins') || SKINS.map((s) => s.id).join(',')).split(',');
+const acc = q.get('acc') ? q.get('acc').split(',') : [];
+const avs = [];
+const gap = +(q.get('gap') || 0.9);
+ids.forEach((id, i) => {
+  const a = createAvatar(assets, { skin: id, acc, h: +(q.get('h') || 1) });
+  a.root.position.x = (i - (ids.length - 1) / 2) * gap;
+  a.root.rotation.y = +(q.get('yaw') || 0);
+  a.drunk = +(q.get('drunk') || 0);
+  scene.add(a.root); avs.push(a);
+});
+const mode = q.get('cam') || 'full';
+const W = (ids.length - 1) * gap + 0.8;
+function frameCam() {
+  cam.aspect = innerWidth / innerHeight; cam.updateProjectionMatrix();
+  const fovH = 2 * Math.atan(Math.tan((cam.fov * Math.PI) / 360) * cam.aspect);
+  if (mode === 'face') { const d = Math.max(0.6, (W / 2) / Math.tan(fovH / 2)); cam.position.set(0, 1.62, d); cam.lookAt(0, 1.62, 0); }
+  else if (mode === 'upper') { const d = Math.max(1.3, (W / 2) / Math.tan(fovH / 2) * 1.05); cam.position.set(0, 1.35, d); cam.lookAt(0, 1.3, 0); }
+  else { const d = Math.max(3.2, (W / 2) / Math.tan(fovH / 2) * 1.05); cam.position.set(0, 1.0, d); cam.lookAt(0, 0.95, 0); }
+}
+frameCam();
+const speed = +(q.get('speed') || 0);
+const em = q.get('emote');
+if (em) avs.forEach((a) => a.emote(em));
+const T = +(q.get('t') || 0);
+for (let t = 0; t < T; t += 1 / 30) avs.forEach((a) => a.update(1 / 30, { speed, run: speed > 2.5 }));
+renderer.render(scene, cam);
+window.__ready = true;
+
+  const cleanups = [];
+const api = {
+  open(html, opts = {}) { const c = document.getElementById('panelCard'); c.classList.toggle('wide', !!opts.wide); c.innerHTML = html; document.getElementById('mPanel').hidden = false; c.querySelectorAll('[data-close]').forEach((b) => (b.onclick = api.close)); return c; },
+  close() { document.getElementById('mPanel').hidden = true; while (cleanups.length) cleanups.pop()(); },
+  onClose(fn) { cleanups.push(fn); },
+};
+window.__api = api;
+function openCust() { openCustomizer(api, avs[0].look, (look) => { avs[0].setLook(look); window.__saved = look; }); }
+window.__openCust = openCust;
+if (!q.get('still')) {
+  const ui = document.getElementById('ui');
+  ui.innerHTML = EMOTES.map((e) => `<button data-e="${e}">${e}</button>`).join('') + '<button data-walk>walk</button><button data-run>run</button><button data-drunk>drunk</button><button data-cust class="primary">Customize</button>';
+  let spd = speed, drunk = 0;
+  ui.onclick = (ev) => {
+    const b = ev.target.closest('button'); if (!b) return;
+    if (b.dataset.e) avs.forEach((a) => a.emote(b.dataset.e));
+    if (b.hasAttribute('data-walk')) spd = spd === 1.5 ? 0 : 1.5;
+    if (b.hasAttribute('data-run')) spd = spd === 4 ? 0 : 4;
+    if (b.hasAttribute('data-drunk')) { drunk = drunk ? 0 : 0.9; avs.forEach((a) => (a.drunk = drunk)); }
+    if (b.hasAttribute('data-cust')) openCust();
+  };
+  let last = performance.now();
+  (function loop(now) {
+    requestAnimationFrame(loop);
+    const dt = Math.min(0.05, (now - last) / 1000); last = now;
+    avs.forEach((a) => a.update(dt, { speed: spd, run: spd > 2.5 }));
+    renderer.render(scene, cam);
+  })(last);
+}
+addEventListener('resize', () => { renderer.setSize(innerWidth, innerHeight, false); frameCam(); });
+</script>
+</body></html>
