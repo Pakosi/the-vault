@@ -129,5 +129,6 @@ input[type=text],select{font:inherit;background:rgba(255,255,255,.04);border:1px
 window.__vlog=function(m){var t=document.getElementById('loadTxt');if(t&&!document.getElementById('loading').hidden)t.textContent=m;};
 addEventListener('error',function(e){window.__verr=(e.message||(e.target&&e.target.src)||'unknown')+' @'+(e.filename||'').split('/').pop()+':'+e.lineno;__vlog('Error: '+window.__verr);},true);
 setTimeout(function(){if(window.__vaultStarted)return;var r=performance.getEntriesByType('resource').map(function(e){return e.name.split('?')[0].split('/').slice(-2).join('/')+':'+Math.round(e.duration)+':'+(e.responseStatus||'?')}).join(' | ');__vlog('Engine did not start. ERR='+(window.__verr||'none')+' || '+r);document.getElementById('loadTxt').style.cssText='font-size:10px;letter-spacing:0;text-transform:none;max-width:90vw;word-break:break-all';},15000);
+var __t0=Date.now();setInterval(function(){var L=document.getElementById('loading');if(L.hidden||Date.now()-__t0<30000)return;var t=document.getElementById('loadTxt');t.style.cssText='font-size:11px;letter-spacing:0;text-transform:none;max-width:90vw';t.textContent='v10 stuck at: '+(window.__stage||'old code (no stage)')+' | waiting on: '+(window.__pending||'-')+' | error: '+(window.__verr||'none')+' | frames: '+(window.__frames||0);},1000);
 </script>
-<script type="module" src="game.js" onerror="__vlog('game.js failed to load')"></script>
+<script type="module" src="game.js?v=10" onerror="__vlog('game.js failed to load')"></script>

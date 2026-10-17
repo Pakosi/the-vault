@@ -201,9 +201,9 @@ function progress(label) { loadDone++; $('bar').firstElementChild.style.width = 
 const pending = new Set();
 function guard(url, p, ms = 90000) {
   const name = url.split('/').pop().replace(/\.(gltf\.json|json|webp)$/, '');
-  pending.add(name);
+  pending.add(name); window.__pending = [...pending].join(',');
   return Promise.race([p, new Promise((res) => setTimeout(() => { console.warn('timeout', url); res(null); }, ms))])
-    .then((v) => (pending.delete(name), v));
+    .then((v) => (pending.delete(name), window.__pending = [...pending].join(','), v));
 }
 setInterval(() => { if (!loadingHidden && pending.size && performance.now() > 25000) $('loadTxt').textContent = 'Still loading: ' + [...pending].join(', '); }, 2000);
 const loadGLTF = (url) => guard(url, new Promise((res) => gltfLoader.load(url, res, undefined, (e) => { console.warn('load failed', url, e); res(null); })));
@@ -247,6 +247,7 @@ async function loadWorld() {
   const lm = { A: lmA, B: lmB };
   for (const t of Object.values(lm)) if (t) { t.colorSpace = THREE.SRGBColorSpace; t.flipY = false; t.channel = 1; t.generateMipmaps = true; t.minFilter = THREE.LinearMipmapLinearFilter; t.anisotropy = 4; }
   const L = layout.lightmaps || {};
+  window.__stage = 'world files loaded';
   if (!gltf) throw new Error('world model failed to load');
   const world = gltf.scene;
   for (const f of await furnP) if (f) world.add(f.scene);
@@ -288,6 +289,7 @@ async function loadWorld() {
     o.matrixAutoUpdate = false; o.updateMatrix();
   });
   dynamic.forEach((o) => (o.visible = false)); // placeholder screens; replaced by live canvases below
+  window.__stage = 'materials set up';
   scene.add(world);
   world.updateMatrixWorld(true);
   buildScreens();
@@ -878,6 +880,7 @@ function frame() {
   try { frame0(); } catch (e) { if (!frameErr++) { console.error(e); if (!loadingHidden) $('loadTxt').textContent = 'Render error: ' + (e?.message || e); } requestAnimationFrame(frame); }
 }
 function frame0() {
+  window.__frames = (window.__frames || 0) + 1;
   const dt = Math.min(0.05, clock.getDelta()), t = clock.elapsedTime;
   updatePlayer(dt); updateRemotes(dt);
   for (const f of tickers) f(dt, t);
@@ -919,13 +922,16 @@ async function boot() {
   setupPipeline();
   $('loadTxt').textContent = 'Reading the floor plan';
   await loadWorld();
+  window.__stage = 'loading avatar';
   const av = await loadGLTF('assets/Soldier.gltf.json');
+  window.__stage = 'avatar loaded';
   if (av) { avatarSrc = av; AV_FWD = Math.PI; }
   me = makeAvatar(player.color, player.name); me.tag.visible = false;
   const sp = layout.spawn; player.pos.set(sp[0], 0, sp[2]); yaw = sp[3];
   drawTV(0);
   requestAnimationFrame(frame);
   connectRoom();
+  window.__stage = 'showing start';
   hideLoading();
   await loadCars();
   hideLoading();
